@@ -36,15 +36,12 @@ import io.crate.analyze.validator.GroupBySymbolValidator;
 import io.crate.analyze.validator.HavingSymbolValidator;
 import io.crate.analyze.validator.SemanticSortValidator;
 import io.crate.exceptions.AmbiguousColumnAliasException;
-import io.crate.exceptions.RelationUnknownException;
-import io.crate.exceptions.ValidationException;
 import io.crate.metadata.FunctionInfo;
 import io.crate.metadata.TableIdent;
 import io.crate.metadata.doc.DocTableInfo;
 import io.crate.metadata.table.Operation;
 import io.crate.metadata.table.TableInfo;
 import io.crate.metadata.tablefunctions.TableFunctionImplementation;
-import io.crate.operation.operator.AndOperator;
 import io.crate.planner.consumer.OrderByWithAggregationValidator;
 import io.crate.planner.node.dql.join.JoinType;
 import io.crate.sql.tree.*;
@@ -101,28 +98,22 @@ public class RelationAnalyzer extends DefaultTraversalVisitor<AnalyzedRelation, 
         process(node.getLeft(), statementContext);
         process(node.getRight(), statementContext);
 
-        RelationAnalysisContext relationContext = statementContext.currentRelationContext();
-
-        relationContext.addJoinType(JoinType.values()[node.getType().ordinal()]);
-
+        Symbol joinCondition = null;
+        RelationAnalysisContext context = statementContext.currentRelationContext();
         Optional<JoinCriteria> optCriteria = node.getCriteria();
         if (optCriteria.isPresent()) {
             JoinCriteria joinCriteria = optCriteria.get();
             if (joinCriteria instanceof JoinOn) {
-                Symbol joinCondition;
-                try {
-                    joinCondition = relationContext.expressionAnalyzer().convert(
-                        ((JoinOn) joinCriteria).getExpression(), relationContext.expressionAnalysisContext());
-                } catch (RelationUnknownException e) {
-                    throw new ValidationException(String.format(Locale.ENGLISH,
-                        "missing FROM-clause entry for relation '%s'", e.qualifiedName()));
-                }
-                relationContext.addJoinCondition(joinCondition);
+                joinCondition = context.expressionAnalyzer().convert(
+                    ((JoinOn) joinCriteria).getExpression(),
+                    context.expressionAnalysisContext());
             } else {
                 throw new UnsupportedOperationException(String.format(Locale.ENGLISH, "join criteria %s not supported",
                         joinCriteria.getClass().getSimpleName()));
             }
         }
+
+        context.addJoinType(JoinType.values()[node.getType().ordinal()], joinCondition);
         return null;
     }
 
@@ -329,11 +320,6 @@ public class RelationAnalyzer extends DefaultTraversalVisitor<AnalyzedRelation, 
             query = context.expressionAnalyzer().convert(where.get(), context.expressionAnalysisContext());
         } else {
             query = Literal.BOOLEAN_TRUE;
-        }
-        if (!joinConditions.isEmpty()) {
-            for (Symbol joinCondition : joinConditions) {
-                query = new Function(AndOperator.INFO, Arrays.asList(query, joinCondition));
-            }
         }
         query = context.expressionAnalyzer().normalize(query, context.expressionAnalysisContext().statementContext());
         return new WhereClause(query);

@@ -23,6 +23,7 @@
 package io.crate.analyze.relations;
 
 import io.crate.analyze.BaseAnalyzerTest;
+import io.crate.exceptions.RelationUnknownException;
 import io.crate.exceptions.ValidationException;
 import io.crate.operation.operator.OperatorModule;
 import io.crate.testing.MockedClusterServiceModule;
@@ -49,8 +50,8 @@ public class RelationAnalyzerTest extends BaseAnalyzerTest {
     }
     @Test
     public void testValidateUsedRelationsInJoinConditions() throws Exception {
-        expectedException.expect(ValidationException.class);
-        expectedException.expectMessage("missing FROM-clause entry for relation 't3'");
+        expectedException.expect(RelationUnknownException.class);
+        expectedException.expectMessage("Cannot resolve relation 't3'");
         analyze("select * from t1 join t2 on t1.a = t3.c join t3 on t2.b = t3.c");
     }
 }
