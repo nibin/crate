@@ -5,6 +5,8 @@ Changes for Crate
 Unreleased
 ==========
 
+ - Added outer join support.
+
  - Fix: Join conditions were not properly validated and an expression
    with a not yet defined relation could be used.
 
