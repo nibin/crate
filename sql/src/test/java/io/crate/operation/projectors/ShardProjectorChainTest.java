@@ -34,6 +34,7 @@ import io.crate.metadata.MetaDataModule;
 import io.crate.metadata.NestedReferenceResolver;
 import io.crate.metadata.RowGranularity;
 import io.crate.operation.ImplementationSymbolVisitor;
+import io.crate.operation.RowDownstream;
 import io.crate.operation.aggregation.impl.AggregationImplModule;
 import io.crate.operation.aggregation.impl.CountAggregation;
 import io.crate.operation.operator.OperatorModule;
@@ -160,13 +161,18 @@ public class ShardProjectorChainTest extends CrateUnitTest {
                 Arrays.<Symbol>asList(Literal.newLiteral(true)),
                 Arrays.asList(countAggregation()));
         groupProjection.setRequiredGranularity(RowGranularity.SHARD);
-        ShardProjectorChain chain = ShardProjectorChain.passThroughMerge(
-                UUID.randomUUID(),
-                2,
-                ImmutableList.of(groupProjection, topN),
-                finalDownstream(),
-                projectionToProjectorVisitor,
-                RAM_ACCOUNTING_CONTEXT);
+        ShardProjectorChain chain = new ShardProjectorChain(
+            UUID.randomUUID(),
+            ImmutableList.of(groupProjection, topN),
+            new RowDownstream.Factory() {
+                @Override
+                public RowDownstream create(RowReceiver rowReceiver) {
+                    return RowMergers.passThroughRowMerger(rowReceiver);
+                }
+            },
+            finalDownstream(),
+            projectionToProjectorVisitor,
+            RAM_ACCOUNTING_CONTEXT);
 
         assertThat(chain.nodeProjectors.size(), is(1));
         assertThat(chain.nodeProjectors.get(0), instanceOf(SimpleTopNProjector.class));
@@ -191,13 +197,18 @@ public class ShardProjectorChainTest extends CrateUnitTest {
                 Arrays.<Symbol>asList(Literal.newLiteral(true)),
                 Arrays.asList(countAggregation()));
         groupProjection2.setRequiredGranularity(RowGranularity.SHARD);
-        ShardProjectorChain chain = ShardProjectorChain.passThroughMerge(
-                UUID.randomUUID(),
-                2,
-                ImmutableList.of(groupProjection1, groupProjection2, topN),
-                finalDownstream(),
-                projectionToProjectorVisitor,
-                RAM_ACCOUNTING_CONTEXT);
+        ShardProjectorChain chain = new ShardProjectorChain(
+            UUID.randomUUID(),
+            ImmutableList.of(groupProjection1, groupProjection2, topN),
+            new RowDownstream.Factory() {
+                @Override
+                public RowDownstream create(RowReceiver rowReceiver) {
+                    return RowMergers.passThroughRowMerger(rowReceiver);
+                }
+            },
+            finalDownstream(),
+            projectionToProjectorVisitor,
+            RAM_ACCOUNTING_CONTEXT);
 
         assertThat(chain.nodeProjectors.size(), is(2));
         assertThat(chain.nodeProjectors.get(0), instanceOf(GroupingProjector.class));
