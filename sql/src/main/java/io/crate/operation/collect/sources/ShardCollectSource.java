@@ -39,9 +39,7 @@ import io.crate.metadata.PartitionName;
 import io.crate.metadata.RowGranularity;
 import io.crate.metadata.shard.unassigned.UnassignedShard;
 import io.crate.operation.ImplementationSymbolVisitor;
-import io.crate.operation.RowDownstream;
 import io.crate.operation.collect.*;
-import io.crate.operation.collect.collectors.CompositeCollector;
 import io.crate.operation.collect.collectors.MultiShardScoreDocCollector;
 import io.crate.operation.collect.collectors.OrderedDocCollector;
 import io.crate.operation.projectors.*;
@@ -201,8 +199,13 @@ public class ShardCollectSource implements CollectSource {
 
         // actual shards might be less if table is partitioned and a partition has been deleted meanwhile
         final int maxNumShards = normalizedPhase.routing().numShards(localNodeId);
-        RowDownstream.Factory rowDownstreamFactory;
-        CompositeCollector.Builder builder = null;
+        Map<String, Map<String, List<Integer>>> locations = normalizedPhase.routing().locations();
+        final List<CrateCollector.Builder> builders = new ArrayList<>(maxNumShards);
+        Map<String, List<Integer>> indexShards = locations.get(localNodeId);
+        if (indexShards != null) {
+            builders.addAll(getDocCollectors(jobCollectContext, normalizedPhase, indexShards));
+        }
+
         boolean hasAnyShardProjections = false;
         for (Projection projection : normalizedPhase.projections()) {
             if (projection.requiredGranularity().ordinal() >= RowGranularity.SHARD.ordinal()) {
@@ -210,43 +213,26 @@ public class ShardCollectSource implements CollectSource {
                 break;
             }
         }
+
         if (hasAnyShardProjections) {
-            rowDownstreamFactory = new RowDownstream.Factory() {
-                @Override
-                public RowDownstream create(RowReceiver rowReceiver) {
-                    if (maxNumShards == 1) {
-                        LOGGER.debug(
-                            "Getting RowDownstream for 1 upstream, repeat support: " + rowReceiver.requirements());
-                        return new SingleUpstreamRowDownstream(rowReceiver);
-                    }
-                    LOGGER.debug("Getting RowDownstream for multiple upstreams; unsorted; repeat support: "
-                                 + rowReceiver.requirements());
-                    return RowMergers.passThroughRowMerger(rowReceiver);
-                }
-            };
+            ShardProjectorChain projectorChain = ShardProjectorChain.passThroughMerge(
+                normalizedPhase.jobId(),
+                maxNumShards,
+                normalizedPhase.projections(),
+                downstream,
+                projectorFactory,
+                jobCollectContext.queryPhaseRamAccountingContext());
+
+            projectorChain.prepare();
+            List<CrateCollector> collectors = new ArrayList<>(builders.size());
+            for (CrateCollector.Builder builder : builders) {
+                collectors.add(builder.build(projectorChain.newShardDownstreamProjector(projectorFactory)));
+            }
         } else {
-            builder = new CompositeCollector.Builder();
-            rowDownstreamFactory = builder.rowDownstreamFactory();
+
         }
-
-        ShardProjectorChain projectorChain = new ShardProjectorChain(
-            normalizedPhase.jobId(),
-            normalizedPhase.projections(),
-            rowDownstreamFactory,
-            downstream,
-            projectorFactory,
-            jobCollectContext.queryPhaseRamAccountingContext());
-
-        Map<String, Map<String, List<Integer>>> locations = normalizedPhase.routing().locations();
-        final List<CrateCollector> shardCollectors = new ArrayList<>(maxNumShards);
-
-        Map<String, List<Integer>> indexShards = locations.get(localNodeId);
-        if (indexShards != null) {
-            shardCollectors.addAll(
-                    getDocCollectors(jobCollectContext, normalizedPhase, projectorChain, indexShards));
-        }
-        projectorChain.prepare();
         if (builder == null) {
+            List<CrateCollector>
             return shardCollectors;
         }
         CrateCollector collector;
@@ -307,12 +293,11 @@ public class ShardCollectSource implements CollectSource {
         );
     }
 
-    private Collection<CrateCollector> getDocCollectors(JobCollectContext jobCollectContext,
-                                                        RoutedCollectPhase collectPhase,
-                                                        ShardProjectorChain projectorChain,
-                                                        Map<String, List<Integer>> indexShards) {
+    private Collection<CrateCollector.Builder> getDocCollectors(JobCollectContext jobCollectContext,
+                                                                RoutedCollectPhase collectPhase,
+                                                                Map<String, List<Integer>> indexShards) {
 
-        List<CrateCollector> crateCollectors = new ArrayList<>();
+        List<CrateCollector.Builder> crateCollectors = new ArrayList<>();
         for (Map.Entry<String, List<Integer>> entry : indexShards.entrySet()) {
             String indexName = entry.getKey();
             IndexService indexService;
@@ -330,20 +315,14 @@ public class ShardCollectSource implements CollectSource {
                 try {
                     shardInjector = indexService.shardInjectorSafe(shardId);
                     ShardCollectService shardCollectService = shardInjector.getInstance(ShardCollectService.class);
-                    CrateCollector collector = shardCollectService.getDocCollector(
-                        collectPhase,
-                        projectorChain,
-                        jobCollectContext
-                    );
+                    CrateCollector.Builder collector = shardCollectService.getDocCollector(collectPhase, jobCollectContext);
                     crateCollectors.add(collector);
                 } catch (ShardNotFoundException | IllegalIndexShardStateException e) {
-                    crateCollectors.add(remoteCollectorFactory.createCollector(
-                        indexName, shardId, collectPhase, projectorChain, jobCollectContext.queryPhaseRamAccountingContext()));
+                    crateCollectors.add(remoteCollectorFactory.create(
+                        indexName, shardId, collectPhase, jobCollectContext.queryPhaseRamAccountingContext()));
                 } catch (InterruptedException e) {
-                    projectorChain.fail(e);
                     throw Throwables.propagate(e);
                 } catch (Throwable t) {
-                    projectorChain.fail(t);
                     throw new UnhandledServerException(t);
                 }
             }

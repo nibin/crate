@@ -45,7 +45,6 @@ import io.crate.operation.collect.collectors.*;
 import io.crate.operation.projectors.ProjectionToProjectorVisitor;
 import io.crate.operation.projectors.Requirement;
 import io.crate.operation.projectors.RowReceiver;
-import io.crate.operation.projectors.ShardProjectorChain;
 import io.crate.operation.reference.doc.lucene.CollectorContext;
 import io.crate.planner.node.dql.RoutedCollectPhase;
 import org.elasticsearch.action.bulk.BulkRetryCoordinatorPool;
@@ -169,26 +168,28 @@ public class ShardCollectService {
      * get a collector
      *
      * @param collectPhase describes the collectOperation
-     * @param projectorChain the shard projector chain to get the downstream from
      * @return collector wrapping different collect implementations, call {@link io.crate.operation.collect.CrateCollector#doCollect()} )} to start
      * collecting with this collector
      */
-    public CrateCollector getDocCollector(RoutedCollectPhase collectPhase,
-                                          ShardProjectorChain projectorChain,
-                                          JobCollectContext jobCollectContext) throws Exception {
+    public CrateCollector.Builder getDocCollector(final RoutedCollectPhase collectPhase,
+                                                  JobCollectContext jobCollectContext) throws Exception {
         assert collectPhase.orderBy() == null : "getDocCollector shouldn't be called if there is an orderBy on the collectPhase";
         RoutedCollectPhase normalizedCollectNode = collectPhase.normalize(shardNormalizer, null);
-        RowReceiver downstream = projectorChain.newShardDownstreamProjector(projectorVisitor);
 
         if (normalizedCollectNode.whereClause().noMatch()) {
-            return RowsCollector.empty(downstream);
+            return null; // TODO
         }
         assert normalizedCollectNode.maxRowGranularity() == RowGranularity.DOC : "granularity must be DOC";
         if (isBlobShard) {
-            return new RowsCollector(downstream,
-                getBlobRows(collectPhase, downstream.requirements().contains(Requirement.REPEAT)));
+            return new CrateCollector.Builder() {
+                @Override
+                public CrateCollector build(RowReceiver rowReceiver) {
+                    return new RowsCollector(rowReceiver,
+                        getBlobRows(collectPhase, rowReceiver.requirements().contains(Requirement.REPEAT)));
+                }
+            };
         } else {
-            return getLuceneIndexCollector(threadPool, normalizedCollectNode, downstream, jobCollectContext);
+            return getLuceneIndexCollector(threadPool, normalizedCollectNode, jobCollectContext);
         }
     }
 
@@ -202,10 +203,9 @@ public class ShardCollectService {
         return rows;
     }
 
-    private CrateCollector getLuceneIndexCollector(ThreadPool threadPool,
-                                                   final RoutedCollectPhase collectPhase,
-                                                   RowReceiver rowReceiver,
-                                                   final JobCollectContext jobCollectContext) throws Exception {
+    private CrateCollector.Builder getLuceneIndexCollector(ThreadPool threadPool,
+                                                           final RoutedCollectPhase collectPhase,
+                                                           final JobCollectContext jobCollectContext) throws Exception {
         SharedShardContext sharedShardContext = jobCollectContext.sharedShardContexts().getOrCreateContext(shardId);
         Engine.Searcher searcher = sharedShardContext.searcher();
         IndexShard indexShard = sharedShardContext.indexShard();
@@ -221,12 +221,11 @@ public class ShardCollectService {
             CollectInputSymbolVisitor.Context docCtx = docInputSymbolVisitor.extractImplementations(collectPhase);
             Executor executor = threadPool.executor(ThreadPool.Names.SEARCH);
 
-            return new CrateDocCollector(
+            return new CrateDocCollector.Builder(
                 searchContext,
                 executor,
                 Symbols.containsColumn(collectPhase.toCollect(), DocSysColumns.SCORE),
                 jobCollectContext.queryPhaseRamAccountingContext(),
-                rowReceiver,
                 docCtx.topLevelInputs(),
                 docCtx.docLevelExpressions()
             );

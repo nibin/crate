@@ -70,7 +70,6 @@ public class ShardProjectorChain {
     private final static ESLogger LOGGER = Loggers.getLogger(ShardProjectorChain.class);
 
     private final UUID jobId;
-    private final RowDownstream.Factory rowDownstreamFactory;
     private final RamAccountingContext ramAccountingContext;
     protected final List<Projector> shardProjectors;
     protected final List<Projector> nodeProjectors;
@@ -81,14 +80,31 @@ public class ShardProjectorChain {
 
     private final RowDownstream rowDownstream;
 
-    public ShardProjectorChain(UUID jobId,
-                               List<? extends Projection> projections,
-                               RowDownstream.Factory rowDownstreamFactory,
-                               RowReceiver finalDownstream,
-                               ProjectorFactory projectorFactory,
-                               RamAccountingContext ramAccountingContext) {
+
+    public static ShardProjectorChain passThroughMerge(UUID jobId,
+                                                       int maxNumShards,
+                                                       List<? extends Projection> projections,
+                                                       RowReceiver finalDownstream,
+                                                       ProjectorFactory projectorFactory,
+                                                       RamAccountingContext ramAccountingContext) {
+        return new ShardProjectorChain(
+                jobId,
+                projections,
+                maxNumShards,
+                finalDownstream,
+                projectorFactory,
+                ramAccountingContext
+        );
+    }
+
+
+    private ShardProjectorChain(UUID jobId,
+                                List<? extends Projection> projections,
+                                int maxNumShards,
+                                RowReceiver finalDownstream,
+                                ProjectorFactory projectorFactory,
+                                RamAccountingContext ramAccountingContext) {
         this.jobId = jobId;
-        this.rowDownstreamFactory = rowDownstreamFactory;
         this.ramAccountingContext = ramAccountingContext;
         this.projections = projections;
         nodeProjectors = new ArrayList<>();
@@ -124,15 +140,27 @@ public class ShardProjectorChain {
             nodeProjectors.get(nodeProjectors.size()-1).downstream(finalDownstream);
         }
 
-        rowDownstream = rowDownstreamFactory.create(firstNodeProjector);
+        rowDownstream = getRowDownstream(maxNumShards);
 
         if (shardProjectionsIndex >= 0) {
             // shardProjector will be created later
-            shardProjectors = new ArrayList<>();
+            shardProjectors = new ArrayList<>((shardProjectionsIndex + 1) * maxNumShards);
         } else {
             shardProjectors = ImmutableList.of();
         }
     }
+
+    private RowDownstream getRowDownstream(int maxNumShards) {
+        if (maxNumShards == 1) {
+            LOGGER.debug("Getting RowDownstream for 1 upstream, repeat support: " + firstNodeProjector.requirements());
+            return new SingleUpstreamRowDownstream(firstNodeProjector);
+        } else {
+            LOGGER.debug("Getting RowDownstream for multiple upstreams; unsorted; repeat support: "
+                    + firstNodeProjector.requirements());
+            return RowMergers.passThroughRowMerger(firstNodeProjector);
+        }
+    }
+
 
     /**
      * Creates a new shard downstream chain if needed and returns a projector to be used as downstream

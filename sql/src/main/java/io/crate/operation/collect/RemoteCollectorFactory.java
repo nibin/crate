@@ -33,9 +33,6 @@ import io.crate.metadata.Routing;
 import io.crate.metadata.RowGranularity;
 import io.crate.operation.ImplementationSymbolVisitor;
 import io.crate.operation.collect.collectors.RemoteCollector;
-import io.crate.operation.projectors.ProjectionToProjectorVisitor;
-import io.crate.operation.projectors.ProjectorFactory;
-import io.crate.operation.projectors.ShardProjectorChain;
 import io.crate.planner.distribution.DistributionInfo;
 import io.crate.planner.node.dql.RoutedCollectPhase;
 import io.crate.planner.projection.Projection;
@@ -47,7 +44,6 @@ import org.elasticsearch.cluster.routing.ShardRouting;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.inject.Singleton;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.index.shard.ShardId;
 import org.elasticsearch.threadpool.ThreadPool;
 
 import java.util.Collections;
@@ -103,11 +99,10 @@ public class RemoteCollectorFactory {
      *
      * This should only be used if a shard is not available on the current node due to a relocation
      */
-    public CrateCollector createCollector(String index,
-                                          Integer shardId,
-                                          RoutedCollectPhase collectPhase,
-                                          ShardProjectorChain projectorChain,
-                                          RamAccountingContext ramAccountingContext) {
+    public CrateCollector.Builder create(String index,
+                                         Integer shardId,
+                                         RoutedCollectPhase collectPhase,
+                                         RamAccountingContext ramAccountingContext) {
         UUID childJobId = UUID.randomUUID(); // new job because subContexts can't be merged into an existing job
 
         IndexShardRoutingTable shardRoutings = clusterService.state().routingTable().shardRoutingTable(index, shardId);
@@ -120,6 +115,7 @@ public class RemoteCollectorFactory {
         String localNodeId = clusterService.localNode().id();
         RoutedCollectPhase newCollectPhase = createNewCollectPhase(childJobId, collectPhase, index, shardId, remoteNodeId);
 
+        /*
         ProjectorFactory projectorFactory = new ProjectionToProjectorVisitor(
             clusterService,
             functions,
@@ -131,8 +127,9 @@ public class RemoteCollectorFactory {
             implementationVisitor,
             normalizer,
             new ShardId(index, shardId));
+            */
 
-        return new RemoteCollector(
+        return new RemoteCollector.Builder(
             childJobId,
             localNodeId,
             remoteNodeId,
@@ -140,7 +137,6 @@ public class RemoteCollectorFactory {
             transportActionProvider.transportKillJobsNodeAction(),
             jobContextService,
             ramAccountingContext,
-            projectorChain.newShardDownstreamProjector(projectorFactory),
             newCollectPhase);
     }
 

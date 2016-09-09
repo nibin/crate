@@ -71,6 +71,52 @@ public class RemoteCollector implements CrateCollector {
     private JobExecutionContext context = null;
     private boolean collectorKilled = false;
 
+    public static class Builder implements CrateCollector.Builder {
+
+        private final UUID childJobId;
+        private final String localNodeId;
+        private final String remoteNodeId;
+        private final TransportJobAction transportJobAction;
+        private final TransportKillJobsNodeAction transportKillJobsNodeAction;
+        private final JobContextService jobContextService;
+        private final RamAccountingContext ramAccountingContext;
+        private final RoutedCollectPhase newCollectPhase;
+
+        public Builder(UUID childJobId,
+                       String localNodeId,
+                       String remoteNodeId,
+                       TransportJobAction transportJobAction,
+                       TransportKillJobsNodeAction transportKillJobsNodeAction,
+                       JobContextService jobContextService,
+                       RamAccountingContext ramAccountingContext,
+                       RoutedCollectPhase newCollectPhase) {
+
+            this.childJobId = childJobId;
+            this.localNodeId = localNodeId;
+            this.remoteNodeId = remoteNodeId;
+            this.transportJobAction = transportJobAction;
+            this.transportKillJobsNodeAction = transportKillJobsNodeAction;
+            this.jobContextService = jobContextService;
+            this.ramAccountingContext = ramAccountingContext;
+            this.newCollectPhase = newCollectPhase;
+        }
+
+        @Override
+        public CrateCollector build(RowReceiver rowReceiver) {
+            return new RemoteCollector(
+                childJobId,
+                localNodeId,
+                remoteNodeId,
+                transportJobAction,
+                transportKillJobsNodeAction,
+                jobContextService,
+                ramAccountingContext,
+                rowReceiver,
+                newCollectPhase
+            );
+        }
+    }
+
     public RemoteCollector(UUID jobId,
                            String localNode,
                            String remoteNode,
