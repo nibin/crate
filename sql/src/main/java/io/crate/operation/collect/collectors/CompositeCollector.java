@@ -190,16 +190,16 @@ public class CompositeCollector implements CrateCollector {
 
         @Override
         public void finish(RepeatHandle repeatable) {
-            listener.onSuccess(null);
             this.repeatHandles.add(repeatable);
             countdown();
+            listener.onSuccess(null);
         }
 
         @Override
         public void fail(Throwable throwable) {
-            listener.onFailure(throwable);
             this.failure = throwable;
             countdown();
+            listener.onFailure(throwable);
         }
 
         @Override
