@@ -22,7 +22,10 @@
 
 package io.crate.integrationtests;
 
+import com.carrotsearch.randomizedtesting.annotations.Repeat;
 import io.crate.testing.UseJdbc;
+import org.elasticsearch.test.ESIntegTestCase;
+import org.elasticsearch.test.junit.annotations.TestLogging;
 import org.junit.Before;
 import org.junit.Test;
 
@@ -30,13 +33,14 @@ import static io.crate.testing.TestingHelpers.printedTable;
 import static org.hamcrest.core.Is.is;
 
 @UseJdbc
+@ESIntegTestCase.ClusterScope(numDataNodes = 1, numClientNodes = 0)
 public class OuterJoinIntegrationTest extends SQLTransportIntegrationTest {
 
     @Before
     public void setupTestData() {
-        execute("create table employees (id integer, name string, office_id integer, profession_id integer)");
-        execute("create table offices (id integer, name string, size integer)");
-        execute("create table professions (id integer, name string)");
+        execute("create table employees (id integer, name string, office_id integer, profession_id integer) clustered into 1 shards");
+        execute("create table offices (id integer, name string, size integer) clustered into 1 shards");
+        execute("create table professions (id integer, name string) clustered into 1 shards");
         ensureYellow();
         execute("insert into employees (id, name, office_id, profession_id) values" +
                 " (1, 'Trillian', 2, 3), (2, 'Ford Perfect', 4, 2), (3, 'Douglas Adams', 3, 1)");
@@ -103,6 +107,9 @@ public class OuterJoinIntegrationTest extends SQLTransportIntegrationTest {
     }
 
     @Test
+    @Repeat(iterations = 100)
+    @TestLogging("io.crate:TRACE")
+    @UseJdbc(false)
     public void test3TableLeftAndRightOuterJoin() throws Exception {
         execute(
             "select professions.name, employees.name, offices.name from" +

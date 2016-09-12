@@ -45,6 +45,8 @@ import io.crate.testing.RowCollectionBucket;
 import io.crate.testing.RowSender;
 import io.crate.testing.TestingHelpers;
 import org.elasticsearch.common.util.CollectionUtils;
+import org.junit.After;
+import org.junit.Before;
 import org.junit.Test;
 
 import javax.annotation.Nullable;
@@ -52,25 +54,37 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.Executor;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 
 import static org.hamcrest.Matchers.isA;
 import static org.hamcrest.core.Is.is;
 
 public class NestedLoopOperationTest extends CrateUnitTest {
 
-    private static final Predicate<Row> JOIN_CONDITION_PREDICATE = new Predicate<Row>() {
+    private static final Predicate<Row> COL_POS_0_EQ_POS_1 = new Predicate<Row>() {
         @Override
         public boolean apply(@Nullable Row input) {
-            return input != null && input.get(0) == input.get(1);
+            return input != null && input.get(0).equals(input.get(1));
         }
     };
+    private ExecutorService executorService;
 
     private Bucket executeNestedLoop(List<Row> leftRows, List<Row> rightRows) throws Exception {
         return executeNestedLoop(
             leftRows, rightRows, Predicates.<Row>alwaysTrue(), Predicates.<Row>alwaysTrue(), JoinType.CROSS, 0, 0);
+    }
+
+    private int phase = 0;
+
+    @Before
+    public void setUpExecutorService() throws Exception {
+        executorService = Executors.newFixedThreadPool(4);
+    }
+
+    @After
+    public void tearDownExecutorService() throws Exception {
+        executorService.shutdown();
+        executorService.awaitTermination(2, TimeUnit.SECONDS);
     }
 
     private Bucket executeNestedLoop(List<Row> leftRows,
@@ -82,7 +96,7 @@ public class NestedLoopOperationTest extends CrateUnitTest {
                                      int rightRowSize) throws Exception {
         CollectingRowReceiver rowReceiver = new CollectingRowReceiver();
         final NestedLoopOperation nestedLoopOperation = new NestedLoopOperation(
-            0, rowReceiver, filterPredicate, joinPredicate, joinType, leftRowSize, rightRowSize);
+            phase++, rowReceiver, filterPredicate, joinPredicate, joinType, leftRowSize, rightRowSize);
 
         PageDownstream leftPageDownstream = pageDownstream(nestedLoopOperation.leftRowReceiver());
         PageDownstream rightPageDownstream = pageDownstream(nestedLoopOperation.rightRowReceiver());
@@ -341,7 +355,7 @@ public class NestedLoopOperationTest extends CrateUnitTest {
         List<Row> leftRows = asRows(1, 2, 3, 4, 5);
         List<Row> rightRows = asRows(3, 5);
         Bucket rows = executeNestedLoop(
-            leftRows, rightRows, Predicates.<Row>alwaysTrue(), JOIN_CONDITION_PREDICATE, JoinType.LEFT, 1, 1);
+            leftRows, rightRows, Predicates.<Row>alwaysTrue(), COL_POS_0_EQ_POS_1, JoinType.LEFT, 1, 1);
         assertThat(TestingHelpers.printedTable(rows), is("1| NULL\n" +
                                                          "2| NULL\n" +
                                                          "3| 3\n" +
@@ -354,7 +368,7 @@ public class NestedLoopOperationTest extends CrateUnitTest {
         List<Row> leftRows = asRows(3, 5);
         List<Row> rightRows = asRows(1, 2, 3, 4, 5);
         Bucket rows = executeNestedLoop(
-            leftRows, rightRows, Predicates.<Row>alwaysTrue(), JOIN_CONDITION_PREDICATE, JoinType.RIGHT, 1, 1);
+            leftRows, rightRows, Predicates.<Row>alwaysTrue(), COL_POS_0_EQ_POS_1, JoinType.RIGHT, 1, 1);
         assertThat(TestingHelpers.printedTable(rows), is("3| 3\n" +
                                                          "5| 5\n" +
                                                          "NULL| 1\n" +
@@ -367,7 +381,7 @@ public class NestedLoopOperationTest extends CrateUnitTest {
         List<Row> leftRows = asRows(3, 5, 6, 7);
         List<Row> rightRows = asRows(1, 2, 3, 4, 5);
         Bucket rows = executeNestedLoop(
-            leftRows, rightRows, Predicates.<Row>alwaysTrue(), JOIN_CONDITION_PREDICATE, JoinType.FULL, 1, 1);
+            leftRows, rightRows, Predicates.<Row>alwaysTrue(), COL_POS_0_EQ_POS_1, JoinType.FULL, 1, 1);
         assertThat(TestingHelpers.printedTable(rows), is("3| 3\n" +
                                                          "5| 5\n" +
                                                          "6| NULL\n" +
@@ -375,6 +389,56 @@ public class NestedLoopOperationTest extends CrateUnitTest {
                                                          "NULL| 1\n" +
                                                          "NULL| 2\n" +
                                                          "NULL| 4\n"));
+    }
+
+    @Test
+    public void testRightJoinALeftJoin() throws Exception {
+        // t1
+        //      left join t2
+        //      right join t3
+        List<Row> t1Rows = asRows(1, 2, 3);
+        List<Row> t2Rows = asRows(2, 3, 4);
+        List<Row> t3Rows = asRows(3, 4, 5);
+
+        CollectingRowReceiver receiver = new CollectingRowReceiver();
+        NestedLoopOperation nlRightJoin = new NestedLoopOperation(
+            1,
+            receiver,
+            Predicates.<Row>alwaysTrue(),
+            new Predicate<Row>() {
+                @Override
+                public boolean apply(@Nullable Row input) {
+                    return input != null && input.get(0).equals(input.get(2));
+                }
+            },
+            JoinType.RIGHT,
+            2,
+            1
+        );
+
+        NestedLoopOperation nlLeftJoin = new NestedLoopOperation(
+            0,
+            nlRightJoin.leftRowReceiver(),
+            Predicates.<Row>alwaysTrue(),
+            COL_POS_0_EQ_POS_1,
+            JoinType.LEFT,
+            1,
+            1
+        );
+
+        RowSender rsT1 = new RowSender(t1Rows, nlLeftJoin.leftRowReceiver(), executorService);
+        RowSender rsT2 = new RowSender(t2Rows, nlLeftJoin.rightRowReceiver(), executorService);
+        RowSender rsT3 = new RowSender(t3Rows, nlRightJoin.rightRowReceiver(), executorService);
+        List<RowSender> rowSenders = Arrays.asList(rsT1, rsT2, rsT3);
+        Collections.shuffle(rowSenders, getRandom());
+        for (RowSender rowSender : rowSenders) {
+            executorService.submit(rowSender);
+        }
+
+        assertThat(TestingHelpers.printedTable(receiver.result()),
+            is("3| 3| 3\n" +
+               "NULL| NULL| 4\n" +
+               "NULL| NULL| 5\n"));
     }
 
     private static List<ListenableRowReceiver> getRandomLeftAndRightRowReceivers(CollectingRowReceiver receiver) {

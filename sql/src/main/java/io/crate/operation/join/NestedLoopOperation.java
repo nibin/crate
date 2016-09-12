@@ -435,6 +435,7 @@ public class NestedLoopOperation implements CompletionListenable, RepeatHandle {
 
         RowReceiver.Result emitRowAndTrace(Row row) {
             RowReceiver.Result result = downstream.setNextRow(row);
+            LOGGER.trace("phase={} side=right method=emitRow row={} result={}", phaseId, row, result);
             if (LOGGER.isTraceEnabled() && result != Result.CONTINUE) {
                 LOGGER.trace("phase={} side=right method=emitRow result={}", phaseId, result);
             }
